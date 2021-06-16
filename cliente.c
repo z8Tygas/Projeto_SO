@@ -78,7 +78,7 @@ int main(int argc, char * argv[]){
             strcat(cmd, "\0");
 
             //envia comando para o servidor
-            write(fdServer, &cmd, strlen(cmd));
+            write(fdServer, &cmd, strlen(cmd)+1);
 
             //abre fifo para receber dados
             int fdR = open(path, O_RDONLY);
