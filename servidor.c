@@ -8,7 +8,7 @@
 #include <sys/wait.h>
 #include <sys/mman.h>
 
-#define MAX_BUF 512 
+#define MAX_BUF 1024
 #define Max_FILTROS 15
 
 int podeReceber = 1;
@@ -21,11 +21,12 @@ void sigtermHandler(int signum){
 //argv[1] == config file argv[2] = FILENAME_filters
 int main(int argc, char * argv[]){
     
-    int *numAlto = mmap(NULL, sizeof(int), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
-    int *numBaixo = mmap(NULL, sizeof(int), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
-    int *numEco = mmap(NULL, sizeof(int), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
-    int *numLento = mmap(NULL, sizeof(int), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
-    int *numRapido = mmap(NULL, sizeof(int), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    int *filtrosUsados[5];
+
+    for(int i = 0; i < 5; i++){
+        filtrosUsados[i] = mmap(NULL, sizeof(int), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    }
+    
 
     if(signal(SIGTERM, sigtermHandler) == SIG_ERR){
         perror("SIGTERM failed: ");
@@ -80,11 +81,10 @@ int main(int argc, char * argv[]){
             }
         }
         //guarda o numero max de ocorrencias concorrentes de cada filtro
-        int numAltoMax = atoi(cnfg[0][2]);
-        int numBaixoMax = atoi(cnfg[1][2]);
-        int numEcoMax = atoi(cnfg[2][2]);
-        int numRapidoMax = atoi(cnfg[3][2]);
-        int numLentoMax = atoi(cnfg[4][2]);
+        int filtrosMax[5];
+        for(int i = 0; i < 5; i++){
+            filtrosMax[i] = atoi(cnfg[i][2]);
+        }
 
         //criar fifo para receber pedidos
         if( mkfifo("./tmp/CtoS",0644) < 0){
@@ -113,19 +113,31 @@ int main(int argc, char * argv[]){
             char * pathFifo;
             token = strtok(buf2, ",");
             pathFifo = token;
+            int filtrosNecessarios[5];
+            for(int i = 0; i < 5; i++) filtrosNecessarios[i] = 0;
             for( int i = 0; i < 4+Max_FILTROS && token != NULL; i++){
                 if(i >= 4){
                     numFiltros++;
-                    if(strcmp(token, cnfg[0][0] ) == 0)
+                    if(strcmp(token, cnfg[0][0] ) == 0){
                         args[i] = cnfg[0][1];
-                    else if(strcmp(token, cnfg[1][0] ) == 0)
+                        filtrosNecessarios[0]++;
+                    }
+                    else if(strcmp(token, cnfg[1][0] ) == 0){
                         args[i] = cnfg[1][1];
-                    else if(strcmp(token, cnfg[2][0] ) == 0)
+                        filtrosNecessarios[1]++;
+                    }
+                    else if(strcmp(token, cnfg[2][0] ) == 0){
                         args[i] = cnfg[2][1];
-                    else if(strcmp(token, cnfg[3][0] ) == 0)
+                        filtrosNecessarios[2]++;
+                    }
+                    else if(strcmp(token, cnfg[3][0] ) == 0){
                         args[i] = cnfg[3][1];
-                    else if(strcmp(token, cnfg[4][0] ) == 0)
+                        filtrosNecessarios[3]++;
+                    }
+                    else if(strcmp(token, cnfg[4][0] ) == 0){
                         args[i] = cnfg[4][1];
+                        filtrosNecessarios[4]++;
+                    }
                     else{
                         printf("%s\n",token);
                     }
@@ -150,10 +162,31 @@ int main(int argc, char * argv[]){
                         close(fdR);
                         _exit(0);
                     }
-                    //diz a cliente que comecou a processar
-                    else{
-                        write(fdR, "Processing...\n", 14);
+                    //teste se o servidor tem recursos suficientes para processar
+                    if(filtrosNecessarios[0] > filtrosMax[0] || filtrosNecessarios[1] > filtrosMax[1] ||
+                       filtrosNecessarios[2] > filtrosMax[2] || filtrosNecessarios[3] > filtrosMax[3] || 
+                       filtrosNecessarios[4] > filtrosMax[4]){
+                        write(fdR, "Servidor nao tem recursos suficientes para processar este pedido.\n", 67);
+                        close(fdR);
+                        _exit(0);
                     }
+                    //verifica se tem filtros suficientes siponiveis
+                    if(filtrosNecessarios[0] > (filtrosMax[0] - *filtrosUsados[0]) || filtrosNecessarios[1] > (filtrosMax[1] - *filtrosUsados[1]) ||
+                       filtrosNecessarios[2] > (filtrosMax[2] - *filtrosUsados[2]) || filtrosNecessarios[3] > (filtrosMax[3] - *filtrosUsados[3]) ||
+                       filtrosNecessarios[4] > (filtrosMax[4] - *filtrosUsados[4]))
+                        write(fdR, "Pending...\n", 11);
+                    while(filtrosNecessarios[0] > (filtrosMax[0] - *filtrosUsados[0]) || filtrosNecessarios[1] > (filtrosMax[1] - *filtrosUsados[1]) ||
+                       filtrosNecessarios[2] > (filtrosMax[2] - *filtrosUsados[2]) || filtrosNecessarios[3] > (filtrosMax[3] - *filtrosUsados[3]) ||
+                       filtrosNecessarios[4] > (filtrosMax[4] - *filtrosUsados[4])){
+                        sleep(1);
+                    }
+                    //adicionar filtros que vai gastar ao total
+                    for(int i = 0; i < 5; i++){
+                        *filtrosUsados[i] += filtrosNecessarios[i];
+                    }
+
+                    //diz a cliente que comecou a processar
+                    write(fdR, "Processing...\n", 14);
                     
 
                     //aplicacao de filtros
@@ -196,14 +229,35 @@ int main(int argc, char * argv[]){
                             printf("status:%d\n",WEXITSTATUS(status));
                         }
                     }
-                    //depois de fazer filtros todos diz a cliente q acabou e sai
+                    //depois de fazer filtros todos
+                    //liberta filtros que vai usou
+                    for(int i = 0; i < 5; i++){
+                        *filtrosUsados[i] -= filtrosNecessarios[i];
+                    }
+                    //diz a cliente que acabou
                     write(fdR, "Finished\n", 9);
                     close(fdR);
                     _exit(0);
                 }
             }
             else if(strcmp(args[0], "status") == 0){
-                //write(fdR, getStatus, 99);
+                //abre fifo para responder a cliente
+                int fdR = open(pathFifo, O_WRONLY);
+                if(fdR < 0){
+                    perror("Servidor - Open fifo resp: ");
+                }
+                char status[MAX_BUF] = "";
+                for(int i = 0; i < 5; i++){
+                    char saux[2] = ""; sprintf(saux, "%d", *filtrosUsados[i]);
+                    strcat(status, "filter "); strcat(status, cnfg[i][0]); strcat(status, ": "); strcat(status, saux);
+                    sprintf(saux, "%d", filtrosMax[i]);
+                    strcat(status, "/"); strcat(status, saux); strcat(status, " (running/max)\n");
+                }
+                char saux[2] = ""; sprintf(saux, "%d",getpid());
+                strcat(status, "pid: "); strcat(status, saux); strcat(status, "\0");
+
+                write(fdR, status, strlen(status)+1);
+                close(fdR);
             }
         }
 
