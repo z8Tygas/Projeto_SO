@@ -6,15 +6,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/wait.h>
+#include <sys/mman.h>
 
 #define MAX_BUF 512 
+#define Max_FILTROS 15
 
 int podeReceber = 1;
-int numAlto = 0;
-int numBaixo = 0;
-int numEco = 0;
-int numLento = 0;
-int numRapido = 0;
 
 void sigtermHandler(int signum){
     podeReceber = 0;
@@ -23,53 +20,16 @@ void sigtermHandler(int signum){
 
 //argv[1] == config file argv[2] = FILENAME_filters
 int main(int argc, char * argv[]){
+    
+    int *numAlto = mmap(NULL, sizeof(int), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    int *numBaixo = mmap(NULL, sizeof(int), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    int *numEco = mmap(NULL, sizeof(int), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    int *numLento = mmap(NULL, sizeof(int), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    int *numRapido = mmap(NULL, sizeof(int), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
 
     if(signal(SIGTERM, sigtermHandler) == SIG_ERR){
         perror("SIGTERM failed: ");
     }
-
-    //receber parametros da config
-    int fdCnfg = open(argv[1], O_RDONLY);
-    if(fdCnfg < 0){
-        printf("Ficheiro config invalido.\n");
-        close(fdCnfg);
-        return 1;
-    }
-    //le do ficheiro
-    char buf[MAX_BUF];
-    read(fdCnfg, &buf, MAX_BUF);
-    close(fdCnfg);
-    char *cnfglines[5];
-    //divide por \n
-    char *token;
-    token = strtok(buf,"\n");
-    for(int i = 0; token != NULL; i++){
-        cnfglines[i] = token;
-        token = strtok(NULL, "\n");
-    }
-    //divide cada linha por espaco
-    char *cnfg[5][3];
-    for(int i = 0; i < 5; i++){
-        token = strtok(cnfglines[i], " ");
-        for(int j = 0; token != NULL; j++){
-            cnfg[i][j] = token;
-            token = strtok(NULL, " ");
-        }
-    }
-    //guarda o numero de ocorrencias concorrentes nas vars globais
-    for(int i = 0; i < 5; i++){
-    if(strcmp(cnfg[i][0], "alto") == 0)
-        numAlto = atoi(cnfg[i][2]);
-    else if(strcmp(cnfg[i][0], "baixo") == 0)
-        numBaixo = atoi(cnfg[i][2]);
-    else if(strcmp(cnfg[i][0], "eco") == 0)
-        numEco = atoi(cnfg[i][2]);
-    else if(strcmp(cnfg[i][0], "rapido") == 0)
-        numRapido = atoi(cnfg[i][2]);
-    else if(strcmp(cnfg[i][0], "lento") == 0)
-        numLento = atoi(cnfg[i][2]);
-    }
-    
 
     //sem argumentos -> -h
     if(argc == 1){
@@ -79,6 +39,53 @@ int main(int argc, char * argv[]){
         printf("Chamada invalida.\n");
     }
     else{
+        //receber parametros da config
+        int fdCnfg = open(argv[1], O_RDONLY);
+        if(fdCnfg < 0){
+            printf("Ficheiro config invalido.\n");
+            close(fdCnfg);
+            return 1;
+        }
+        //le do ficheiro
+        char buf[MAX_BUF];
+        read(fdCnfg, &buf, MAX_BUF);
+        close(fdCnfg);
+        char *cnfglines[5];
+        //divide por \n
+        char *token;
+        token = strtok(buf,"\n");
+        for(int i = 0; token != NULL; i++){
+            cnfglines[i] = token;
+            token = strtok(NULL, "\n");
+        }
+        //divide cada linha por espaco e da sort no array cnfg
+        char *cnfg[5][3];
+        for(int i = 0,k = -1; i < 5; i++){
+            token = strtok(cnfglines[i], " ");
+            for(int j = 0; token != NULL; j++){
+                if(j==0){
+                    if(strcmp(token, "alto") == 0)
+                        k = 0;
+                    else if(strcmp(token, "baixo") == 0)
+                        k = 1;
+                    else if(strcmp(token, "eco") == 0)
+                        k = 2;
+                    else if(strcmp(token, "rapido") == 0)
+                        k = 3;
+                    else if(strcmp(token, "lento") == 0)
+                        k = 4;
+                }
+                cnfg[k][j] = token;
+                token = strtok(NULL, " ");
+            }
+        }
+        //guarda o numero max de ocorrencias concorrentes de cada filtro
+        int numAltoMax = atoi(cnfg[0][2]);
+        int numBaixoMax = atoi(cnfg[1][2]);
+        int numEcoMax = atoi(cnfg[2][2]);
+        int numRapidoMax = atoi(cnfg[3][2]);
+        int numLentoMax = atoi(cnfg[4][2]);
+
         //criar fifo para receber pedidos
         if( mkfifo("./tmp/CtoS",0644) < 0){
             perror("Servidor - Fifo: ");
@@ -96,18 +103,17 @@ int main(int argc, char * argv[]){
 
         //receber pedidos
         int bytes_read;
-        char buf[MAX_BUF];
-        while( (bytes_read = read(fd, &buf, MAX_BUF)) > 0 ){
+        char buf2[MAX_BUF];
+        while( (bytes_read = read(fd, &buf2, MAX_BUF)) > 0 ){
             
             //parse do cmd recebido para um array de strings
             int numFiltros = 0;
-            char * args[10];
+            char * args[4 + Max_FILTROS];
             char * token;
             char * pathFifo;
-            token = strtok(buf, ",");
+            token = strtok(buf2, ",");
             pathFifo = token;
-            int i;
-            for( i = 0; i < 9 && token != NULL; i++){
+            for( int i = 0; i < 4+Max_FILTROS && token != NULL; i++){
                 if(i >= 4){
                     numFiltros++;
                     if(strcmp(token, cnfg[0][0] ) == 0)
@@ -120,13 +126,15 @@ int main(int argc, char * argv[]){
                         args[i] = cnfg[3][1];
                     else if(strcmp(token, cnfg[4][0] ) == 0)
                         args[i] = cnfg[4][1];
+                    else{
+                        printf("%s\n",token);
+                    }
                 }
                 else{
                     args[i] = token;
                 }
                 token = strtok(NULL, ",");
             }
-            args[i] = NULL;
 
             if(strcmp(args[1], "transform") == 0){
                 if(fork() == 0){ // cria monitor
