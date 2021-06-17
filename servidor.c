@@ -11,6 +11,64 @@
 #define MAX_BUF 1024
 #define Max_FILTROS 15
 
+typedef struct node{
+    int pid;
+    char string[150];
+    struct node *prox;
+} *TLIST;
+
+void newNode(TLIST *head, int pid, char *string)
+{
+    TLIST new_node = malloc(sizeof(struct node));
+    new_node->pid = pid;
+    strcpy(new_node->string, string);
+    new_node->prox = NULL;
+    if((*head) == NULL){
+        (*head) = new_node;
+        return;
+    }
+    TLIST l = (*head);
+    while(l->prox != NULL){
+        l = l->prox;
+    }
+    l->prox = new_node;
+}
+
+void deleteNode(TLIST* head_ref, int pid)
+{
+    // guarda cabeca da lista
+    TLIST temp = *head_ref, ant;
+ 
+    // se cabeca tem pid
+    if (temp != NULL && temp->pid == pid) {
+        *head_ref = temp->prox;
+        free(temp);
+        return;
+    }
+ 
+    // procura pid e guarda anterior
+    while (temp != NULL && temp->pid != pid) {
+        ant = temp;
+        temp = temp->prox;
+    }
+ 
+    // nao encontrou
+    if (temp == NULL)
+        return;
+ 
+    // encontrei, anterior aponta para o proximo
+    ant->prox = temp->prox;
+    free(temp);
+}
+
+void printTList(TLIST node)
+{
+    while (node != NULL) {
+        printf("pid: %d\t string: %s\n", node->pid, node->string);
+        node = node->prox;
+    }
+}
+
 int podeReceber = 1;
 
 void sigtermHandler(int signum){
@@ -20,13 +78,6 @@ void sigtermHandler(int signum){
 
 //argv[1] == config file argv[2] = FILENAME_filters
 int main(int argc, char * argv[]){
-    
-    int *filtrosUsados[5];
-
-    for(int i = 0; i < 5; i++){
-        filtrosUsados[i] = mmap(NULL, sizeof(int), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
-    }
-    
 
     if(signal(SIGTERM, sigtermHandler) == SIG_ERR){
         perror("SIGTERM failed: ");
@@ -40,6 +91,12 @@ int main(int argc, char * argv[]){
         printf("Chamada invalida.\n");
     }
     else{
+        //shared variables
+        int *filtrosUsados[5];
+        for(int i = 0; i < 5; i++){
+            filtrosUsados[i] = mmap(NULL, sizeof(int), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+            *filtrosUsados[i] = 0;
+        }
         //receber parametros da config
         int fdCnfg = open(argv[1], O_RDONLY);
         if(fdCnfg < 0){
@@ -101,11 +158,13 @@ int main(int argc, char * argv[]){
             perror("Servidor - Open fifo: ");
         }
 
+        //inicializar lista de tasks
+        TLIST listaTasks = NULL;
+        int numTask = 0;
+
         //receber pedidos
-        int bytes_read;
         char buf2[MAX_BUF];
-        while( (bytes_read = read(fd, &buf2, MAX_BUF)) > 0 ){
-            
+        while( (read(fd, &buf2, MAX_BUF)) > 0 ){
             //parse do cmd recebido para um array de strings
             int numFiltros = 0;
             char * args[4 + Max_FILTROS];
@@ -147,9 +206,10 @@ int main(int argc, char * argv[]){
                 }
                 token = strtok(NULL, ",");
             }
-
+        
             if(strcmp(args[1], "transform") == 0){
-                if(fork() == 0){ // cria monitor
+                pid_t pidmon;
+                if((pidmon = fork()) == 0){ // cria monitor
 
                     //abre fifo para responder a cliente
                     int fdR = open(pathFifo, O_WRONLY);
@@ -173,11 +233,11 @@ int main(int argc, char * argv[]){
                     //verifica se tem filtros suficientes siponiveis
                     if(filtrosNecessarios[0] > (filtrosMax[0] - *filtrosUsados[0]) || filtrosNecessarios[1] > (filtrosMax[1] - *filtrosUsados[1]) ||
                        filtrosNecessarios[2] > (filtrosMax[2] - *filtrosUsados[2]) || filtrosNecessarios[3] > (filtrosMax[3] - *filtrosUsados[3]) ||
-                       filtrosNecessarios[4] > (filtrosMax[4] - *filtrosUsados[4]))
+                       filtrosNecessarios[4] > (filtrosMax[4] - *filtrosUsados[4])){
                         write(fdR, "Pending...\n", 11);
                     while(filtrosNecessarios[0] > (filtrosMax[0] - *filtrosUsados[0]) || filtrosNecessarios[1] > (filtrosMax[1] - *filtrosUsados[1]) ||
                        filtrosNecessarios[2] > (filtrosMax[2] - *filtrosUsados[2]) || filtrosNecessarios[3] > (filtrosMax[3] - *filtrosUsados[3]) ||
-                       filtrosNecessarios[4] > (filtrosMax[4] - *filtrosUsados[4])){
+                       filtrosNecessarios[4] > (filtrosMax[4] - *filtrosUsados[4]))
                         sleep(1);
                     }
                     //adicionar filtros que vai gastar ao total
@@ -239,22 +299,50 @@ int main(int argc, char * argv[]){
                     close(fdR);
                     _exit(0);
                 }
+                else{
+                    if(podeReceber){
+                        int i = 1;
+                        printf("executa %d\n",i);
+                        char novaTask[170] = "";
+                        char temp[150] = "";
+                        for(int i = 2; i < (4 + numFiltros) ; i++){
+                            strcat(temp, " ");
+                            if(strcmp(args[i], cnfg[0][1] ) == 0){
+                                strcat(temp, cnfg[0][0]);
+                            }
+                            else if(strcmp(args[i], cnfg[1][1] ) == 0){
+                                strcat(temp, cnfg[1][0]);
+                            }
+                            else if(strcmp(args[i], cnfg[2][1] ) == 0){
+                                strcat(temp, cnfg[2][0]);
+                            }
+                            else if(strcmp(args[i], cnfg[3][1] ) == 0){
+                                strcat(temp, cnfg[3][0]);
+                            }
+                            else if(strcmp(args[i], cnfg[4][1] ) == 0){
+                                strcat(temp, cnfg[4][0]);
+                            }
+                            else{
+                                strcat(temp, args[i]);
+                            }
+                            
+                        }
+                        sprintf(novaTask, "Task #%d: transform%s%c", numTask, temp,'\0');
+                        numTask++;
+                        newNode(&listaTasks, pidmon, novaTask);
+                        printTList(listaTasks);
+                    }
+                }
             }
-            else if(strcmp(args[0], "status") == 0){
+            else if(strcmp(args[1], "status") == 0){
                 //abre fifo para responder a cliente
                 int fdR = open(pathFifo, O_WRONLY);
                 if(fdR < 0){
                     perror("Servidor - Open fifo resp: ");
                 }
                 char status[MAX_BUF] = "";
-                for(int i = 0; i < 5; i++){
-                    char saux[2] = ""; sprintf(saux, "%d", *filtrosUsados[i]);
-                    strcat(status, "filter "); strcat(status, cnfg[i][0]); strcat(status, ": "); strcat(status, saux);
-                    sprintf(saux, "%d", filtrosMax[i]);
-                    strcat(status, "/"); strcat(status, saux); strcat(status, " (running/max)\n");
-                }
-                char saux[2] = ""; sprintf(saux, "%d",getpid());
-                strcat(status, "pid: "); strcat(status, saux); strcat(status, "\0");
+
+                strcat(status, "pega la o status boiola\n\0");
 
                 write(fdR, status, strlen(status)+1);
                 close(fdR);
