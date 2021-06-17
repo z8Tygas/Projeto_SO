@@ -258,59 +258,52 @@ int main(int argc, char * argv[]){
 
                             //diz a cliente que comecou a processar
                             write(fdR, "Processing...\n", 14);
+                            close(fdR);
+
+                            int fdSample,fdOut;
+                            //abre sample e redir para stdin
+                            if( (fdSample = open(args[2], O_RDONLY)) == -1){
+                                perror("Abrir sample: "); return -1;
+                            }
+                            dup2(fdSample,0); close(fdSample);
                             
+                            //abre o output e redir para stdout
+                            if( (fdOut = open(args[3], O_TRUNC | O_WRONLY | O_CREAT, 0644)) == -1){
+                                perror("Abrir output: "); return -1;
+                            };
+                            dup2(fdOut,1); close(fdOut);
 
                             //------------------aplicacao de filtros----------------------------
-                            for(int i = 0; i < numFiltros; i++){
+                            int p[2];
+                            int i;
+                            for(i = 0; i < (numFiltros-1); i++){
+                                pipe(p);
                                 if(fork() == 0){
-                                //abre o audio para aplicar filtros
-                                if( i == 0){
-                                    int fdSample = open(args[2], O_RDONLY);
-                                    if(fdSample < 0){
-                                        perror("Erro abrir sample: ");
+                                    dup2(p[1], 1); close(p[0]); close(p[1]);
+                                    //prepara path do filtro
+                                    char filter[40] = "";
+                                    strcat(filter, argv[2]); strcat(filter,"/"); strcat(filter, args[i+4]);
+                                    //executa o filtro
+                                    if(execl(filter, args[i+4], NULL) < 0){
+                                        perror("Erro filtro: ");
                                         _exit(5);
                                     }
-                                    dup2(fdSample, 0);
-                                    close(fdSample);
                                 }
-                                else{//ja aplicou o 1o filtro e o proximo filtro e no output
-                                    int fdOut = open(args[3], O_RDONLY);
-                                    if(fdOut < 0){
-                                        perror("Erro abrir output: ");
-                                    }
-                                    dup2(fdOut, 0);
-                                    close(fdOut);
+                                else{
+                                    dup2(p[0], 0); close(p[0]); close(p[1]);
                                 }
-                                //abre ficheiro output
-                                int fdOut = open(args[3],O_CREAT | O_WRONLY, 0644);
-                                dup2(fdOut, 1);
-                                close(fdOut);
-
-                                //prepara path do filtro
-                                char filter[40] = "";
-                                strcat(filter, argv[2]); strcat(filter,"/"); strcat(filter, args[i+4]);
-                                //executa o filtro
-                                execl(filter, args[i+4], NULL);
+                            }
+                            //prepara path do ultimo filtro (stdout -> outputfile)
+                            char filter[40] = "";
+                            strcat(filter, argv[2]); strcat(filter,"/"); strcat(filter, args[i+4]);
+                            //executa o filtro
+                            if(execl(filter, args[i+4], NULL) < 0){
+                                perror("Erro filtro: ");
                                 _exit(5);
-
-                                }
-                                else{//sequencial
-                                    int status;
-                                    wait(&status);
-                                }
                             }
-                            //depois de fazer filtros todos liberta filtros que usou
-                            for(int i = 0; i < 5; i++){
-                                *filtrosUsados[i] -= filtrosNecessarios[i];
-                            }
-                            //diz a cliente que acabou
-                            write(fdR, "Finished\n", 9);
-                            close(fdR);
-                            _exit(0);
                         } // -------------------- fim manager de execs ----------------------
                         else{ // codigo de manager de pedido
                             //-----------------------------adiciona/remove task a lista de tasks--------------------------------
-                            close(fdR);
                             char novaTask[190] = "";
                             char temp[150] = "";
                             for(int i = 2; i < (4 + numFiltros) ; i++){
@@ -342,6 +335,14 @@ int main(int argc, char * argv[]){
 
                             int status;
                             waitpid(pidmon, &status, 0);
+                            
+                            //depois de fazer filtros todos liberta filtros que usou
+                            for(int i = 0; i < 5; i++){
+                                *filtrosUsados[i] -= filtrosNecessarios[i];
+                            }
+                            //diz a cliente que acabou
+                            write(fdR, "Finished\n", 9);
+                            close(fdR);
 
                             sprintf(novaTask, "%d,remove%c",pidmon,'\0');
                             //pede ao servidor para tirar esta task
