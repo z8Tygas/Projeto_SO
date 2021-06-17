@@ -94,23 +94,22 @@ int main(int argc, char * argv[]){
             }
         }
         else if( strcmp(argv[1], "status") == 0){
-            //prepara comando
+            //cria fifo para receber dados do servidor
             char path[15] = "";
             sprintf(path, "./tmp/%d", getpid());
-            
-            char cmd[15] = "";
-            strcat(cmd, path);
-            strcat(cmd, ",status"); strcat(cmd,"\0");
-
-            //envia comando para o servidor
-            write(fdServer, cmd, strlen(cmd));
-
-            //cria fifo para receber dados do servidor
-            
             if( mkfifo(path, 0644) < 0){
                 perror("Cliente - Criar/Abrir fifo: ");
-                return -1;
+                return 1;
             }
+            //prepara comando
+            char cmd[25] = "";
+            strcat(cmd, path); // path do fifo
+            strcat(cmd, ",status"); // status / argv[1]
+            strcat(cmd, "\0");
+
+            //envia comando para o servidor
+            write(fdServer, &cmd, strlen(cmd)+1);
+            
             //abre fifo para receber dados
             int fdR = open(path, O_RDONLY);
             if( fdR < 0){
@@ -123,12 +122,11 @@ int main(int argc, char * argv[]){
             while( (bytes_read = read(fdR, &buf, MAX_BUF)) > 0 ){
                 write(1, &buf, bytes_read);
             }
+            close(fdR);
         }
         else{
             printf("Chamada Invalida.\n");
-        }
-
-    
+        }    
     }
     return 0;
 }
