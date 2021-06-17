@@ -61,19 +61,17 @@ void deleteNode(TLIST* head_ref, int pid)
     free(temp);
 }
 
-void printTList(TLIST node)
-{
-    while (node != NULL) {
-        printf("pid: %d\t string: %s\n", node->pid, node->string);
-        node = node->prox;
-    }
-}
-
 int podeReceber = 1;
+
+//inicializar lista de tasks
+TLIST listaTasks = NULL;
 
 void sigtermHandler(int signum){
     podeReceber = 0;
     printf("O servidor nao ira aceitar mais pedidos.\n");
+    if(listaTasks == NULL)
+        exit(0);
+
 }
 
 //argv[1] == config file argv[2] = FILENAME_filters
@@ -97,6 +95,9 @@ int main(int argc, char * argv[]){
             filtrosUsados[i] = mmap(NULL, sizeof(int), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
             *filtrosUsados[i] = 0;
         }
+        int *numTask = mmap(NULL, sizeof(int), PROT_WRITE | PROT_READ, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+        *numTask = 0;
+
         //receber parametros da config
         int fdCnfg = open(argv[1], O_RDONLY);
         if(fdCnfg < 0){
@@ -158,13 +159,9 @@ int main(int argc, char * argv[]){
             perror("Servidor - Open fifo: ");
         }
 
-        //inicializar lista de tasks
-        TLIST listaTasks = NULL;
-        int numTask = 0;
-
         //receber pedidos
         char buf2[MAX_BUF];
-        while( (read(fd, &buf2, MAX_BUF)) > 0 ){
+        while( (podeReceber || listaTasks != NULL ) && (read(fd, &buf2, MAX_BUF)) > 0 ){
             //parse do cmd recebido para um array de strings
             int numFiltros = 0;
             char * args[4 + Max_FILTROS];
@@ -206,148 +203,172 @@ int main(int argc, char * argv[]){
                 }
                 token = strtok(NULL, ",");
             }
-        
-            if(strcmp(args[1], "transform") == 0){
-                pid_t pidmon;
-                if((pidmon = fork()) == 0){ // cria monitor
-
-                    //abre fifo para responder a cliente
-                    int fdR = open(pathFifo, O_WRONLY);
-                    if(fdR < 0){
-                        perror("Servidor - Open fifo resp: ");
-                    }
-                    //se ja nao pode receber mais pedidos
-                    if(!podeReceber){
-                        write(fdR, "Servidor nao ira receber mais pedidos.\n", 39);
-                        close(fdR);
-                        _exit(0);
-                    }
-                    //teste se o servidor tem recursos suficientes para processar
-                    if(filtrosNecessarios[0] > filtrosMax[0] || filtrosNecessarios[1] > filtrosMax[1] ||
-                       filtrosNecessarios[2] > filtrosMax[2] || filtrosNecessarios[3] > filtrosMax[3] || 
-                       filtrosNecessarios[4] > filtrosMax[4]){
-                        write(fdR, "Servidor nao tem recursos suficientes para processar este pedido.\n", 67);
-                        close(fdR);
-                        _exit(0);
-                    }
-                    //verifica se tem filtros suficientes siponiveis
-                    if(filtrosNecessarios[0] > (filtrosMax[0] - *filtrosUsados[0]) || filtrosNecessarios[1] > (filtrosMax[1] - *filtrosUsados[1]) ||
-                       filtrosNecessarios[2] > (filtrosMax[2] - *filtrosUsados[2]) || filtrosNecessarios[3] > (filtrosMax[3] - *filtrosUsados[3]) ||
-                       filtrosNecessarios[4] > (filtrosMax[4] - *filtrosUsados[4])){
-                        write(fdR, "Pending...\n", 11);
-                    while(filtrosNecessarios[0] > (filtrosMax[0] - *filtrosUsados[0]) || filtrosNecessarios[1] > (filtrosMax[1] - *filtrosUsados[1]) ||
-                       filtrosNecessarios[2] > (filtrosMax[2] - *filtrosUsados[2]) || filtrosNecessarios[3] > (filtrosMax[3] - *filtrosUsados[3]) ||
-                       filtrosNecessarios[4] > (filtrosMax[4] - *filtrosUsados[4]))
-                        sleep(1);
-                    }
-                    //adicionar filtros que vai gastar ao total
-                    for(int i = 0; i < 5; i++){
-                        *filtrosUsados[i] += filtrosNecessarios[i];
-                    }
-
-                    //diz a cliente que comecou a processar
-                    write(fdR, "Processing...\n", 14);
-                    
-
-                    //aplicacao de filtros
-                    for(int i = 0; i < numFiltros; i++){
-                        if(fork() == 0){
-                        //abre o audio para aplicar filtros
-                        if( i == 0){
-                            int fdSample = open(args[2], O_RDONLY);
-                            if(fdSample < 0){
-                                perror("Erro abrir sample: ");
-                                _exit(5);
-                            }
-                            dup2(fdSample, 0);
-                            close(fdSample);
-                        }
-                        else{//ja aplicou o 1o filtro e o proximo filtro e no output
-                            int fdOut = open(args[3], O_RDONLY);
-                            if(fdOut < 0){
-                                perror("Erro abrir output: ");
-                            }
-                            dup2(fdOut, 0);
-                            close(fdOut);
-                        }
-                        //abre ficheiro output
-                        int fdOut = open(args[3],O_CREAT | O_WRONLY, 0644);
-                        dup2(fdOut, 1);
-                        close(fdOut);
-
-                        //prepara path do filtro
-                        char filter[40] = "";
-                        strcat(filter, argv[2]); strcat(filter,"/"); strcat(filter, args[i+4]);
-                        //executa o filtro
-                        execl(filter, args[i+4], NULL);
-                        _exit(5);
-
-                        }
-                        else{//sequencial
-                            int status;
-                            wait(&status);
-                            printf("status:%d\n",WEXITSTATUS(status));
-                        }
-                    }
-                    //depois de fazer filtros todos
-                    //liberta filtros que vai usou
-                    for(int i = 0; i < 5; i++){
-                        *filtrosUsados[i] -= filtrosNecessarios[i];
-                    }
-                    //diz a cliente que acabou
-                    write(fdR, "Finished\n", 9);
-                    close(fdR);
-                    _exit(0);
-                }
-                else{
-                    if(podeReceber){
-                        int i = 1;
-                        printf("executa %d\n",i);
-                        char novaTask[170] = "";
-                        char temp[150] = "";
-                        for(int i = 2; i < (4 + numFiltros) ; i++){
-                            strcat(temp, " ");
-                            if(strcmp(args[i], cnfg[0][1] ) == 0){
-                                strcat(temp, cnfg[0][0]);
-                            }
-                            else if(strcmp(args[i], cnfg[1][1] ) == 0){
-                                strcat(temp, cnfg[1][0]);
-                            }
-                            else if(strcmp(args[i], cnfg[2][1] ) == 0){
-                                strcat(temp, cnfg[2][0]);
-                            }
-                            else if(strcmp(args[i], cnfg[3][1] ) == 0){
-                                strcat(temp, cnfg[3][0]);
-                            }
-                            else if(strcmp(args[i], cnfg[4][1] ) == 0){
-                                strcat(temp, cnfg[4][0]);
-                            }
-                            else{
-                                strcat(temp, args[i]);
-                            }
-                            
-                        }
-                        sprintf(novaTask, "Task #%d: transform%s%c", numTask, temp,'\0');
-                        numTask++;
-                        newNode(&listaTasks, pidmon, novaTask);
-                        printTList(listaTasks);
-                    }
-                }
+            //pedidos de gestao de lista de pedidos
+            if(strcmp(args[1],"add") == 0){
+                newNode(&listaTasks, atoi(args[0]), args[2]);
             }
-            else if(strcmp(args[1], "status") == 0){
-                //abre fifo para responder a cliente
-                int fdR = open(pathFifo, O_WRONLY);
-                if(fdR < 0){
-                    perror("Servidor - Open fifo resp: ");
-                }
-                char status[MAX_BUF] = "";
+            else if(strcmp(args[1], "remove") == 0){
+                deleteNode(&listaTasks, atoi(args[0]));
+            }
+            else{//pedido de status ou transform
+                if(fork() == 0){//monitor de pedido
+                    if(strcmp(args[1], "transform") == 0){
+                        //abre fifo para responder a cliente
+                        int fdR = open(pathFifo, O_WRONLY);
+                        if(fdR < 0){
+                            perror("Servidor - Open fifo resp: ");
+                        }
+                        //se ja nao pode receber mais pedidos
+                        if(!podeReceber){
+                            write(fdR, "Servidor nao ira receber mais pedidos.\n", 39);
+                            close(fdR);
+                            _exit(0);
+                        }
+                        //teste se o servidor tem recursos suficientes para processar
+                        if(filtrosNecessarios[0] > filtrosMax[0] || filtrosNecessarios[1] > filtrosMax[1] ||
+                        filtrosNecessarios[2] > filtrosMax[2] || filtrosNecessarios[3] > filtrosMax[3] || 
+                        filtrosNecessarios[4] > filtrosMax[4]){
+                            write(fdR, "Servidor nao tem recursos suficientes para processar este pedido.\n", 67);
+                            close(fdR);
+                            _exit(0);
+                        }
+                        pid_t pidmon;
+                        if((pidmon = fork()) == 0){ // cria monitor de transform
 
-                strcat(status, "pega la o status boiola\n\0");
+                            //verifica se tem filtros suficientes siponiveis
+                            if(filtrosNecessarios[0] > (filtrosMax[0] - *filtrosUsados[0]) || filtrosNecessarios[1] > (filtrosMax[1] - *filtrosUsados[1]) ||
+                            filtrosNecessarios[2] > (filtrosMax[2] - *filtrosUsados[2]) || filtrosNecessarios[3] > (filtrosMax[3] - *filtrosUsados[3]) ||
+                            filtrosNecessarios[4] > (filtrosMax[4] - *filtrosUsados[4])){
+                                write(fdR, "Pending...\n", 11);
+                            while(filtrosNecessarios[0] > (filtrosMax[0] - *filtrosUsados[0]) || filtrosNecessarios[1] > (filtrosMax[1] - *filtrosUsados[1]) ||
+                            filtrosNecessarios[2] > (filtrosMax[2] - *filtrosUsados[2]) || filtrosNecessarios[3] > (filtrosMax[3] - *filtrosUsados[3]) ||
+                            filtrosNecessarios[4] > (filtrosMax[4] - *filtrosUsados[4]))
+                                sleep(1);
+                            }
+                            //adicionar filtros que vai gastar ao total
+                            for(int i = 0; i < 5; i++){
+                                *filtrosUsados[i] += filtrosNecessarios[i];
+                            }
 
-                write(fdR, status, strlen(status)+1);
-                close(fdR);
+                            //diz a cliente que comecou a processar
+                            write(fdR, "Processing...\n", 14);
+                            
+
+                            //aplicacao de filtros
+                            for(int i = 0; i < numFiltros; i++){
+                                if(fork() == 0){
+                                //abre o audio para aplicar filtros
+                                if( i == 0){
+                                    int fdSample = open(args[2], O_RDONLY);
+                                    if(fdSample < 0){
+                                        perror("Erro abrir sample: ");
+                                        _exit(5);
+                                    }
+                                    dup2(fdSample, 0);
+                                    close(fdSample);
+                                }
+                                else{//ja aplicou o 1o filtro e o proximo filtro e no output
+                                    int fdOut = open(args[3], O_RDONLY);
+                                    if(fdOut < 0){
+                                        perror("Erro abrir output: ");
+                                    }
+                                    dup2(fdOut, 0);
+                                    close(fdOut);
+                                }
+                                //abre ficheiro output
+                                int fdOut = open(args[3],O_CREAT | O_WRONLY, 0644);
+                                dup2(fdOut, 1);
+                                close(fdOut);
+
+                                //prepara path do filtro
+                                char filter[40] = "";
+                                strcat(filter, argv[2]); strcat(filter,"/"); strcat(filter, args[i+4]);
+                                //executa o filtro
+                                execl(filter, args[i+4], NULL);
+                                _exit(5);
+
+                                }
+                                else{//sequencial
+                                    int status;
+                                    wait(&status);
+                                }
+                            }//monitor de transform
+                            //depois de fazer filtros todos liberta filtros que usou
+                            for(int i = 0; i < 5; i++){
+                                *filtrosUsados[i] -= filtrosNecessarios[i];
+                            }
+                            //diz a cliente que acabou
+                            write(fdR, "Finished\n", 9);
+                            close(fdR);
+                            _exit(0);
+                        } // fim monitor de transform
+                        else{ // codigo de monitor de pedido
+                            close(fdR);
+                            char novaTask[190] = "";
+                            char temp[150] = "";
+                            for(int i = 2; i < (4 + numFiltros) ; i++){
+                                strcat(temp, " ");
+                                if(strcmp(args[i], cnfg[0][1] ) == 0){
+                                    strcat(temp, cnfg[0][0]);
+                                }
+                                else if(strcmp(args[i], cnfg[1][1] ) == 0){
+                                    strcat(temp, cnfg[1][0]);
+                                }
+                                else if(strcmp(args[i], cnfg[2][1] ) == 0){
+                                    strcat(temp, cnfg[2][0]);
+                                }
+                                else if(strcmp(args[i], cnfg[3][1] ) == 0){
+                                    strcat(temp, cnfg[3][0]);
+                                }
+                                else if(strcmp(args[i], cnfg[4][1] ) == 0){
+                                    strcat(temp, cnfg[4][0]);
+                                }
+                                else{
+                                    strcat(temp, args[i]);
+                                }
+                                
+                            }
+                            sprintf(novaTask, "%d,add,Task #%d: transform%s%c",pidmon, *numTask, temp,'\0');
+                            *numTask += 1;
+                            //pede ao servidor para adicionar esta task
+                            write(fd2, &novaTask, strlen(novaTask)+1);
+
+                            int status;
+                            pid_t child = waitpid(pidmon, &status, 0);
+                            printf("child %d acabou\n",child);
+
+                            sprintf(novaTask, "%d,remove%c",pidmon,'\0');
+                            //pede ao servidor para tirar esta task
+                            write(fd2, novaTask, strlen(novaTask)+1);
+                            _exit(0);
+                        }
+                    }//fim if transform
+                    else if(strcmp(args[1], "status") == 0){
+                        //abre fifo para responder a cliente
+                        int fdR = open(pathFifo, O_WRONLY);
+                        if(fdR < 0){
+                            perror("Servidor - Open fifo resp: ");
+                        }
+                        char status[MAX_BUF] = "";
+                        while (listaTasks != NULL) {
+                            sprintf(status, "%s\n%c", listaTasks->string, '\0');
+                            write(fdR, status, strlen(status)+1);
+                            listaTasks = listaTasks->prox;
+                        }
+                        for(int i = 0; i < 5; i++){
+                            sprintf(status, "filter %s: %d/%d (running/max)\n%c",cnfg[i][0], *filtrosUsados[i], filtrosMax[i], '\0');
+                            write(fdR, status, strlen(status)+1);
+                        }
+                        strcpy(status, "");
+                        sprintf(status, "pid: %d\n%c",getppid(), '\0');
+                        write(fdR, status, strlen(status)+1);
+                        close(fdR);
+                        _exit(0);
+                    }
+                }//fim monitor de pedido
             }
         }
+        printf("Fim ciclo ler\n");
 
         close(fd);
         close(fd2);
