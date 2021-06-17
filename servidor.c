@@ -11,6 +11,7 @@
 #define MAX_BUF 1024
 #define Max_FILTROS 15
 
+//-----------------------Linked List funcs------------------------------------------
 typedef struct node{
     int pid;
     char string[150];
@@ -61,32 +62,35 @@ void deleteNode(TLIST* head_ref, int pid)
     free(temp);
 }
 
+//-----------------------------vars globais para serem usadas por sighandlers------------------------
 int podeReceber = 1;
 
 //inicializar lista de tasks
 TLIST listaTasks = NULL;
 
+//--------------------------------------------sig handlers--------------------------------------
 void sigtermHandler(int signum){
     podeReceber = 0;
-    printf("O servidor nao ira aceitar mais pedidos.\n");
+    write(1, "O servidor nao ira aceitar mais pedidos.\n", 41);
     if(listaTasks == NULL)
         exit(0);
 
 }
 
-//argv[1] == config file argv[2] = FILENAME_filters
+//argv[1] == config file | argv[2] = FILENAME_filters
+//---------------------------------------------Main-------------------------------------------
 int main(int argc, char * argv[]){
 
     if(signal(SIGTERM, sigtermHandler) == SIG_ERR){
         perror("SIGTERM failed: ");
     }
 
-    //sem argumentos -> -h
+    //-----------------verificar call--------------------
     if(argc == 1){
-        printf("./servidor config-filename filters-folder\n");
+        write(1, "./servidor config-filename filters-folder\n", 42);
     }
     else if(argc != 3 ){
-        printf("Chamada invalida.\n");
+        write(1, "Chamada invalida.\n", 18);
     }
     else{
         //shared variables
@@ -98,10 +102,10 @@ int main(int argc, char * argv[]){
         int *numTask = mmap(NULL, sizeof(int), PROT_WRITE | PROT_READ, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
         *numTask = 0;
 
-        //receber parametros da config
+        //-------------------------------ler config---------------------
         int fdCnfg = open(argv[1], O_RDONLY);
         if(fdCnfg < 0){
-            printf("Ficheiro config invalido.\n");
+            write(1, "Ficheiro config invalido.\n", 26);
             close(fdCnfg);
             return 1;
         }
@@ -123,15 +127,15 @@ int main(int argc, char * argv[]){
             token = strtok(cnfglines[i], " ");
             for(int j = 0; token != NULL; j++){
                 if(j==0){
-                    if(strcmp(token, "alto") == 0)
+                    if(strcmp(token, "alto") == 0)  //cnfg[0] -> alto
                         k = 0;
-                    else if(strcmp(token, "baixo") == 0)
+                    else if(strcmp(token, "baixo") == 0) //cnfg[1] -> baixo
                         k = 1;
-                    else if(strcmp(token, "eco") == 0)
+                    else if(strcmp(token, "eco") == 0) //cnfg[2] -> eco
                         k = 2;
-                    else if(strcmp(token, "rapido") == 0)
+                    else if(strcmp(token, "rapido") == 0) //cnfg[3] -> rapido
                         k = 3;
-                    else if(strcmp(token, "lento") == 0)
+                    else if(strcmp(token, "lento") == 0) //cnfg[4] -> lento
                         k = 4;
                 }
                 cnfg[k][j] = token;
@@ -144,6 +148,7 @@ int main(int argc, char * argv[]){
             filtrosMax[i] = atoi(cnfg[i][2]);
         }
 
+        //------------------------criar fifo------------------------------------
         //criar fifo para receber pedidos
         if( mkfifo("./tmp/CtoS",0644) < 0){
             perror("Servidor - Fifo: ");
@@ -159,10 +164,10 @@ int main(int argc, char * argv[]){
             perror("Servidor - Open fifo: ");
         }
 
-        //receber pedidos
+        //-------------------------receber pedidos---------------------------
         char buf2[MAX_BUF];
         while( (podeReceber || listaTasks != NULL ) && (read(fd, &buf2, MAX_BUF)) > 0 ){
-            //parse do cmd recebido para um array de strings
+            //------------------parse de cmd recebido--------------------------
             int numFiltros = 0;
             char * args[4 + Max_FILTROS];
             char * token;
@@ -194,15 +199,13 @@ int main(int argc, char * argv[]){
                         args[i] = cnfg[4][1];
                         filtrosNecessarios[4]++;
                     }
-                    else{
-                        printf("%s\n",token);
-                    }
                 }
                 else{
-                    args[i] = token;
+                    args[i] = token;    //args[0] pid | [1] transform/status | [2] infile | [3] outfile | [4] filtros
                 }
                 token = strtok(NULL, ",");
             }
+            //---------------reconhecer pedido--------------------------
             //pedidos de gestao de lista de pedidos
             if(strcmp(args[1],"add") == 0){
                 newNode(&listaTasks, atoi(args[0]), args[2]);
@@ -211,13 +214,15 @@ int main(int argc, char * argv[]){
                 deleteNode(&listaTasks, atoi(args[0]));
             }
             else{//pedido de status ou transform
-                if(fork() == 0){//monitor de pedido
+                //-----------------manager de pedido --------------------
+                if(fork() == 0){
                     if(strcmp(args[1], "transform") == 0){
                         //abre fifo para responder a cliente
                         int fdR = open(pathFifo, O_WRONLY);
                         if(fdR < 0){
-                            perror("Servidor - Open fifo resp: ");
+                            perror("Servidor - Open fifo cliente resp: ");
                         }
+                        //------------------------------testa se pode correr---------------------
                         //se ja nao pode receber mais pedidos
                         if(!podeReceber){
                             write(fdR, "Servidor nao ira receber mais pedidos.\n", 39);
@@ -233,7 +238,8 @@ int main(int argc, char * argv[]){
                             _exit(0);
                         }
                         pid_t pidmon;
-                        if((pidmon = fork()) == 0){ // cria monitor de transform
+                        //---------------------------manager de execs-------------------------
+                        if((pidmon = fork()) == 0){
 
                             //verifica se tem filtros suficientes siponiveis
                             if(filtrosNecessarios[0] > (filtrosMax[0] - *filtrosUsados[0]) || filtrosNecessarios[1] > (filtrosMax[1] - *filtrosUsados[1]) ||
@@ -254,7 +260,7 @@ int main(int argc, char * argv[]){
                             write(fdR, "Processing...\n", 14);
                             
 
-                            //aplicacao de filtros
+                            //------------------aplicacao de filtros----------------------------
                             for(int i = 0; i < numFiltros; i++){
                                 if(fork() == 0){
                                 //abre o audio para aplicar filtros
@@ -292,7 +298,7 @@ int main(int argc, char * argv[]){
                                     int status;
                                     wait(&status);
                                 }
-                            }//monitor de transform
+                            }
                             //depois de fazer filtros todos liberta filtros que usou
                             for(int i = 0; i < 5; i++){
                                 *filtrosUsados[i] -= filtrosNecessarios[i];
@@ -301,8 +307,9 @@ int main(int argc, char * argv[]){
                             write(fdR, "Finished\n", 9);
                             close(fdR);
                             _exit(0);
-                        } // fim monitor de transform
-                        else{ // codigo de monitor de pedido
+                        } // -------------------- fim manager de execs ----------------------
+                        else{ // codigo de manager de pedido
+                            //-----------------------------adiciona/remove task a lista de tasks--------------------------------
                             close(fdR);
                             char novaTask[190] = "";
                             char temp[150] = "";
@@ -334,8 +341,7 @@ int main(int argc, char * argv[]){
                             write(fd2, &novaTask, strlen(novaTask)+1);
 
                             int status;
-                            pid_t child = waitpid(pidmon, &status, 0);
-                            printf("child %d acabou\n",child);
+                            waitpid(pidmon, &status, 0);
 
                             sprintf(novaTask, "%d,remove%c",pidmon,'\0');
                             //pede ao servidor para tirar esta task
@@ -347,14 +353,16 @@ int main(int argc, char * argv[]){
                         //abre fifo para responder a cliente
                         int fdR = open(pathFifo, O_WRONLY);
                         if(fdR < 0){
-                            perror("Servidor - Open fifo resp: ");
+                            perror("Servidor - Open fifo cliente resp: ");
                         }
+                        //envia a cliente lista de tasks a correr e por correr
                         char status[MAX_BUF] = "";
                         while (listaTasks != NULL) {
                             sprintf(status, "%s\n%c", listaTasks->string, '\0');
                             write(fdR, status, strlen(status)+1);
                             listaTasks = listaTasks->prox;
                         }
+                        //envia a cliente status dos filtros
                         for(int i = 0; i < 5; i++){
                             sprintf(status, "filter %s: %d/%d (running/max)\n%c",cnfg[i][0], *filtrosUsados[i], filtrosMax[i], '\0');
                             write(fdR, status, strlen(status)+1);
@@ -368,7 +376,6 @@ int main(int argc, char * argv[]){
                 }//fim monitor de pedido
             }
         }
-        printf("Fim ciclo ler\n");
 
         close(fd);
         close(fd2);
